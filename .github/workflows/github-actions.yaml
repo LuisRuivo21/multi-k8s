@@ -1,0 +1,70 @@
+name: Deploy MultiK8s
+on:
+  push:
+    branches:
+      - main
+
+env:
+  SHA: $(git rev-parse HEAD)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Docker Login
+        run: |-
+          docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker Image
+        run: |-
+          docker build -t luisruivo/react-test -f ./client/Dockerfile.dev ./client
+
+      - name: Run Tests - Create and Run Container from Image
+        run: |-
+          docker run -e CI=true luisruivo/react-test npm test
+
+      - name: Authenticate to Google Cloud
+        uses: "google-github-actions/auth@v0"
+        with:
+          credentials_json: "${{ secrets.GOOGLE_CREDENTIALS }}"
+
+      - name: Set Project
+        uses: google-github-actions/setup-gcloud@v0
+        with:
+          project_id: multi-k8s-391314
+
+      - name: Docker Authentication with Google Cloud
+        run: |-
+          gcloud --quiet auth configure-docker
+
+      - name: Get Credentials
+        uses: google-github-actions/get-gke-credentials@v0
+        with:
+          cluster_name: multi-k8s
+          location: europe-west2-a
+
+      - name: Build Deployment Images
+        run: |-
+          docker build -t luisruivo/multi-client-k8s-gh:latest -t luisruivo/multi-client-k8s-gh:${{ env.SHA }} -f ./client/Dockerfile ./client
+          docker build -t luisruivo/multi-server-k8s-gh:latest -t luisruivo/multi-server-k8s-gh:${{ env.SHA }} -f ./server/Dockerfile ./server
+          docker build -t luisruivo/multi-worker-k8s-gh:latest -t luisruivo/multi-worker-k8s-gh:${{ env.SHA }} -f ./worker/Dockerfile ./worker
+
+      - name: Push Deployment Tags to Docker Hub
+        run: |-
+          docker push luisruivo/multi-client-k8s-gh:latest
+          docker push luisruivo/multi-server-k8s-gh:latest
+          docker push luisruivo/multi-worker-k8s-gh:latest
+
+          docker push luisruivo/multi-client-k8s-gh:${{ env.SHA }}
+          docker push luisruivo/multi-server-k8s-gh:${{ env.SHA }}
+          docker push luisruivo/multi-worker-k8s-gh:${{ env.SHA }}
+
+      - name: Apply Deployment Images
+        run: |-
+          kubectl apply -f k8s
+          kubectl set image deployments/server-deployment server=luisruivo/multi-server-k8s-gh:${{ env.SHA }}
+          kubectl set image deployments/client-deployment client=luisruivo/multi-client-k8s-gh:${{ env.SHA }}
+          kubectl set image deployments/worker-deployment worker=luisruivo/multi-worker-k8s-gh:${{ env.SHA }}
